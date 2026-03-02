@@ -7,11 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-
     "update-types": "supabase gen types typescript --project-id ssstfxetlemoqrhwggej > types/database.types.ts && npx supazod -i types/database.types.ts -o types/types.zod.ts --inline-types"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.20",
+    "@livekit/components-styles": "^1.2.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.98.0",
     "livekit-client": "^2.17.2",
