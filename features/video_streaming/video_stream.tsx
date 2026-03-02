@@ -6,8 +6,8 @@ import {
   useTracks, 
   DisconnectButton,
   useLocalParticipant,
-  AudioConference,
-  isTrackReference, // Crucial for type guarding
+  RoomAudioRenderer, // FIX 1: Replaced AudioConference (renders UI) with RoomAudioRenderer (audio-only)
+  isTrackReference,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { useEffect, useState } from 'react';
@@ -17,11 +17,21 @@ import { Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 
 export default function VideoStreamingComponent() {
   const [token, setToken] = useState("");
+  const [tokenError, setTokenError] = useState(false);
 
   useEffect(() => {
     const name = "User_" + Math.floor(Math.random() * 100);
-    getLiveKitToken("my-test-room", name).then(setToken);
+    // FIX 2: Added error handling so the component doesn't hang forever on failure
+    getLiveKitToken("my-test-room", name)
+      .then(setToken)
+      .catch(() => setTokenError(true));
   }, []);
+
+  if (tokenError) return (
+    <div className="flex h-screen items-center justify-center bg-neutral-900 text-white font-sans">
+      <div className="text-lg font-medium text-red-400">Failed to connect. Please try again.</div>
+    </div>
+  );
 
   if (token === "") return (
     <div className="flex h-screen items-center justify-center bg-neutral-900 text-white font-sans">
@@ -35,7 +45,7 @@ export default function VideoStreamingComponent() {
         video={true}
         audio={true}
         token={token}
-        serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL}
+        serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL!} // FIX 3: Non-null assertion to resolve string | undefined TS error
         data-lk-theme="default"
       >
         <DuoLayout />
@@ -45,16 +55,13 @@ export default function VideoStreamingComponent() {
 }
 
 function DuoLayout() {
-  // 1. FIX: Added 'withPlaceholder' to satisfy TrackSourceWithOptions
+  // FIX 4: Removed unused Microphone source — audio is handled by RoomAudioRenderer
   const tracks = useTracks([
     { source: Track.Source.Camera, withPlaceholder: false },
-    { source: Track.Source.Microphone, withPlaceholder: false },
   ]);
   
   const { isMicrophoneEnabled, isCameraEnabled, localParticipant } = useLocalParticipant();
 
-  // 2. FIX: Use isTrackReference to narrow the type and strip away 'Placeholder'
-  // This satisfies the VideoTrack 'trackRef' requirement
   const remoteVideoTrack = tracks.find(
     (t) => t.source === Track.Source.Camera && !t.participant.isLocal && isTrackReference(t)
   );
@@ -65,10 +72,13 @@ function DuoLayout() {
 
   return (
     <div className="relative h-full w-full flex items-center justify-center">
-      <AudioConference />
+      {/* FIX 1: RoomAudioRenderer silently plays remote audio with no UI side-effects */}
+      <RoomAudioRenderer />
       
       {/* --- BACKGROUND: Remote Participant --- */}
       <div className="absolute inset-0 z-0 bg-neutral-800">
+        {/* FIX 5: isTrackReference() check is already guaranteed by the .find() filter above,
+            but kept here as an explicit type narrowing step for TypeScript's benefit */}
         {remoteVideoTrack && isTrackReference(remoteVideoTrack) ? (
           <VideoTrack 
             trackRef={remoteVideoTrack} 
@@ -86,7 +96,9 @@ function DuoLayout() {
 
       {/* --- PIP: Local Participant (You) --- */}
       <div className="absolute top-6 right-6 w-32 h-44 md:w-48 md:h-64 rounded-2xl overflow-hidden shadow-2xl border border-white/10 z-20 bg-neutral-900">
-        {localVideoTrack && isCameraEnabled && isTrackReference(localVideoTrack) ? (
+        {/* FIX 6: Removed redundant isCameraEnabled check — with withPlaceholder:false,
+            localVideoTrack is already undefined when camera is off */}
+        {localVideoTrack && isTrackReference(localVideoTrack) ? (
           <VideoTrack 
             trackRef={localVideoTrack} 
             className="h-full w-full object-cover scale-x-[-1]" 
