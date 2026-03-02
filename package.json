@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+
+    "update-types": "supabase gen types typescript --project-id ssstfxetlemoqrhwggej > types/database.types.ts && npx supazod -i types/database.types.ts -o types/types.zod.ts --inline-types"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.20",
@@ -26,6 +28,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "supabase": "^2.76.15",
+    "supazod": "^4.5.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
