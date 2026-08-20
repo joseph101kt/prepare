@@ -1,6 +1,17 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
+
+// ─── Mounting Store Helper ──────────────────────────────────────────────────
+
+const emptySubscribe = () => () => {};
+function useIsMounted() {
+  return useSyncExternalStore(
+    emptySubscribe,
+    () => true,  // Client snapshot
+    () => false  // Server snapshot
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -184,10 +195,6 @@ function spo2Y(x: number, bpm: number): number {
   return 0.88 - Math.pow(Math.sin(Math.max(0, n) * Math.PI), 2.2) * 0.72;
 }
 
-function triageWaveColor(triage: TriageLevel): string {
-  return TRIAGE_CFG[triage].color;
-}
-
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function RiskBar({ score, color }: { score: number; color: string }) {
@@ -224,7 +231,6 @@ function VitalCard({ label, value, alert }: { label: string; value: string; aler
   );
 }
 
-// Clickable Checklist Item
 function ChecklistItem({ text, checked, onToggle }: { text: string; checked: boolean; onToggle: () => void }) {
   return (
     <button
@@ -262,7 +268,6 @@ function ChecklistItem({ text, checked, onToggle }: { text: string; checked: boo
   );
 }
 
-// Live Waveform Canvas
 function WaveCanvas({
   id, fn, color, offsetRef, liveHrRef,
 }: {
@@ -274,7 +279,6 @@ function WaveCanvas({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const isLight = document.body.classList.contains("light");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -318,7 +322,7 @@ function WaveCanvas({
 
     animRef.current = requestAnimationFrame(draw);
     return () => { running = false; cancelAnimationFrame(animRef.current); };
-  }, [fn, color]);
+  }, [fn, color, offsetRef, liveHrRef]);
 
   return <canvas ref={canvasRef} id={id} style={{ width: "100%", height: 88, display: "block", borderRadius: 6 }} />;
 }
@@ -326,10 +330,13 @@ function WaveCanvas({
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function PrepareDashboard() {
+  const isMounted = useIsMounted();
+
   const [emergencies, setEmergencies] = useState<Emergency[]>(EMERGENCIES);
   const [selectedId, setSelectedId]   = useState("E-001");
   const [isDark, setIsDark]           = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
   // checklist state: { [emergencyId]: Set<number> }
   const [checked, setChecked] = useState<Record<string, Set<number>>>({});
 
@@ -341,21 +348,20 @@ export default function PrepareDashboard() {
   const liveSpo2Ref   = useRef(98);
   const targetSpo2Ref = useRef(98);
 
-  const [displayHr, setDisplayHr]     = useState(72);
-  const [displaySpo2, setDisplaySpo2] = useState(98);
-  const animRef = useRef<number>(0);
+  const [, setDisplayHr]   = useState(72);
+  const [, setDisplaySpo2] = useState(98);
 
   const selected = emergencies.find(e => e.id === selectedId)!;
   const sorted   = [...emergencies].sort((a, b) => b.risk_score - a.risk_score);
   const cfg      = TRIAGE_CFG[selected.triage_level];
   const ci       = STATUSES.indexOf(selected.status);
-  const checkedSet = checked[selectedId] ?? new Set<number>();
 
-  // Theme effect
+  // Theme effect — only runs on client, applies dark mode class
   useEffect(() => {
+    if (!isMounted) return;
     if (isDark) document.body.classList.remove("light");
     else document.body.classList.add("light");
-  }, [isDark]);
+  }, [isDark, isMounted]);
 
   // Reset vitals on patient change
   useEffect(() => {
@@ -363,7 +369,7 @@ export default function PrepareDashboard() {
     targetSpo2Ref.current = selected.vitals.spo2;
     ecgOffsetRef.current  = 0;
     spo2OffsetRef.current = 0;
-  }, [selectedId]);
+  }, [selectedId, selected.vitals.hr, selected.vitals.spo2]);
 
   // Tick loop for offsets + display numbers
   useEffect(() => {
@@ -385,22 +391,24 @@ export default function PrepareDashboard() {
     setEmergencies(prev => prev.map(e => e.id === selectedId ? { ...e, status: val } : e));
   };
 
-  const toggleCheck = (idx: number) => {
-    setChecked(prev => {
-      const s = new Set(prev[selectedId] ?? []);
-      if (s.has(idx)) s.delete(idx); else s.add(idx);
-      return { ...prev, [selectedId]: s };
-    });
-  };
-
   const incomingCount = emergencies.filter(e => e.status === "incoming").length;
   const criticalCount = emergencies.filter(e => e.triage_level === "CRITICAL").length;
-  const doneCount = checkedSet.size;
-  const totalCount = selected.checklist.length;
 
-  // Memoized wave fns with stable identity
-  const ecgFn  = useCallback(ecgY,  []);
-  const spo2Fn = useCallback(spo2Y, []);
+  // Prevent SSR hydration mismatch: don't render interactive content until mounted
+  if (!isMounted) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100vh", background: "var(--bg0)", color: "var(--t2)",
+        fontFamily: "'DM Mono','Fira Code',monospace",
+      }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 18, marginBottom: 12 }}>Preparing Dashboard…</div>
+          <div style={{ fontSize: 12, color: "var(--t3)" }}>Loading emergency cases</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -469,8 +477,8 @@ export default function PrepareDashboard() {
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   {sidebarOpen
-                    ? <><polyline points="15 18 9 12 15 6"/></>
-                    : <><polyline points="9 18 15 12 9 6"/></>}
+                    ? <polyline points="15 18 9 12 15 6"/>
+                    : <polyline points="9 18 15 12 9 6"/>}
                 </svg>
               </button>
             </div>
@@ -678,134 +686,61 @@ export default function PrepareDashboard() {
               </div>
             </div>
 
-            {/* Vitals row */}
-            <div>
-              <div style={{ fontSize: 9, color: "var(--t4)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 9 }}>Vitals</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-                <VitalCard label="Heart Rate"     value={`${selected.vitals.hr} bpm`}       alert={selected.vitals.hr > 110 || selected.vitals.hr < 50} />
-                <VitalCard label="Blood Pressure" value={selected.vitals.bp}                  alert={false} />
-                <VitalCard label="SpO₂"           value={`${selected.vitals.spo2}%`}          alert={selected.vitals.spo2 < 93} />
-                <VitalCard label="Glucose"        value={`${selected.vitals.glucose} mg/dL`}  alert={false} />
+            {/* Vitals Grid */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              <VitalCard label="Heart Rate" value={`${selected.vitals.hr} bpm`} alert={selected.vitals.hr > 100 || selected.vitals.hr < 60} />
+              <VitalCard label="Blood Pressure" value={selected.vitals.bp} alert={parseInt(selected.vitals.bp.split('/')[0]) > 140} />
+              <VitalCard label="SpO2" value={`${selected.vitals.spo2}%`} alert={selected.vitals.spo2 < 95} />
+              <VitalCard label="Blood Glucose" value={`${selected.vitals.glucose} mg/dL`} alert={selected.vitals.glucose > 180} />
+            </div>
+
+            {/* Waveform Canvases */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, color: "var(--t3)" }}>ECG Telemetry</div>
+                <WaveCanvas id="ecg-canvas" fn={ecgY} color={cfg.color} offsetRef={ecgOffsetRef} liveHrRef={liveHrRef} />
+              </div>
+              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, color: "var(--t3)" }}>SpO2 Plethysmograph</div>
+                <WaveCanvas id="spo2-canvas" fn={spo2Y} color="#3b82f6" offsetRef={spo2OffsetRef} liveHrRef={liveHrRef} />
               </div>
             </div>
 
-            {/* Live waveforms */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {/* ECG */}
-              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: "13px 15px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, color: "var(--t3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", display: "inline-block", animation: "pulse-dot 1.5s ease infinite" }} />
-                    ECG · Live Rhythm
-                  </div>
-                  <div>
-                    <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: triageWaveColor(selected.triage_level), transition: "color 0.3s" }}>{displayHr}</span>
-                    <span style={{ fontSize: 10, color: "var(--t3)", marginLeft: 2 }}>bpm</span>
-                  </div>
-                </div>
-                <WaveCanvas id="ecg" fn={ecgFn} color={triageWaveColor(selected.triage_level)} offsetRef={ecgOffsetRef} liveHrRef={liveHrRef} />
-              </div>
-
-              {/* SpO2 */}
-              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: "13px 15px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, color: "var(--t3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6", display: "inline-block", animation: "pulse-dot 1.5s ease infinite" }} />
-                    SpO₂ · Pleth Wave
-                  </div>
-                  <div style={{ display: "flex", gap: 14, alignItems: "baseline" }}>
-                    <div>
-                      <span style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 700, color: "#3b82f6" }}>{displaySpo2}</span>
-                      <span style={{ fontSize: 10, color: "var(--t3)", marginLeft: 2 }}>%</span>
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--t3)" }}>
-                      BP&nbsp;<span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: "var(--t1)" }}>{selected.vitals.bp}</span>
-                    </div>
-                  </div>
-                </div>
-                <WaveCanvas id="spo2" fn={spo2Fn} color="#3b82f6" offsetRef={spo2OffsetRef} liveHrRef={liveHrRef} />
-              </div>
-            </div>
-
-            {/* AI summary + side panels */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 250px", gap: 14 }}>
-
-              {/* AI card */}
-              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: "15px 17px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#6366f1" }} />
-                  <span style={{ fontSize: 9, color: "var(--t3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>AI Summary</span>
-                  <span style={{ fontSize: 9, color: "var(--t4)", marginLeft: "auto" }}>confidence {selected.confidence}%</span>
-                </div>
-                <p style={{ fontSize: 12, color: "var(--t2)", lineHeight: 1.75 }}>{selected.ai_summary}</p>
+            {/* AI Summary + Checklist */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: 16 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10, color: "var(--t3)" }}>AI Triage Summary</div>
+                <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--t1)" }}>{selected.ai_summary}</p>
                 {selected.extracted_text && (
-                  <div style={{ marginTop: 12, padding: "9px 12px", background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.14)", borderRadius: 8 }}>
-                    <div style={{ fontSize: 9, color: "#6366f1", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>OCR Extract</div>
-                    <p style={{ fontSize: 11, color: "var(--t3)", fontStyle: "italic" }}>{selected.extracted_text}</p>
+                  <div style={{ marginTop: 12, padding: 10, background: "rgba(0,0,0,0.15)", borderRadius: 8, fontSize: 11, color: "var(--t2)", borderLeft: "2px solid #3b82f6" }}>
+                    {selected.extracted_text}
                   </div>
                 )}
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontSize: 9, color: "var(--t4)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 7 }}>Risk Score</div>
-                  <RiskBar score={selected.risk_score} color={cfg.color} />
-                </div>
               </div>
 
-              {/* Side: symptoms + checklist */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {/* Symptoms */}
-                <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: "13px 15px" }}>
-                  <div style={{ fontSize: 9, color: "var(--t4)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 9 }}>Symptoms</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {selected.symptoms.map(s => (
-                      <span key={s} style={{ fontSize: 10, color: "var(--t3)", background: "var(--bg2)", border: "1px solid var(--bd)", padding: "3px 9px", borderRadius: 20 }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Checklist */}
-                <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: "13px 15px", flex: 1 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div style={{ fontSize: 9, color: "var(--t4)", letterSpacing: "0.12em", textTransform: "uppercase" }}>Prep Checklist</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      {/* Progress pill */}
-                      <span style={{
-                        fontSize: 9, fontWeight: 700, letterSpacing: "0.04em",
-                        color: doneCount === totalCount ? "#22c55e" : "var(--t3)",
-                        background: doneCount === totalCount ? "rgba(34,197,94,0.10)" : "var(--bg2)",
-                        border: `1px solid ${doneCount === totalCount ? "rgba(34,197,94,0.25)" : "var(--bd)"}`,
-                        padding: "2px 7px", borderRadius: 5, transition: "all 0.3s",
-                      }}>
-                        {doneCount}/{totalCount}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div style={{ height: 2, background: "var(--bd)", borderRadius: 99, overflow: "hidden", marginBottom: 10 }}>
-                    <div style={{
-                      height: "100%", borderRadius: 99,
-                      background: doneCount === totalCount ? "#22c55e" : "#3b82f6",
-                      width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%`,
-                      transition: "width 0.4s ease, background 0.3s",
-                    }} />
-                  </div>
-
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    {selected.checklist.map((item, i) => (
-                      <ChecklistItem
-                        key={`${selectedId}-${i}`}
-                        text={item}
-                        checked={checkedSet.has(i)}
-                        onToggle={() => toggleCheck(i)}
-                      />
-                    ))}
-                  </div>
+              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd)", borderRadius: 12, padding: 16 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10, color: "var(--t3)" }}>Readiness Checklist</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {selected.checklist.map((item, idx) => (
+                    <ChecklistItem
+                      key={idx}
+                      text={item}
+                      checked={(checked[selectedId] ?? new Set()).has(idx)}
+                      onToggle={() => {
+                        setChecked(prev => {
+                          const s = new Set(prev[selectedId] ?? []);
+                          if (s.has(idx)) s.delete(idx); else s.add(idx);
+                          return { ...prev, [selectedId]: s };
+                        });
+                      }}
+                    />
+                  ))}
                 </div>
               </div>
             </div>
 
-          </div>{/* /content */}
-        </div>{/* /main */}
+          </div>
+        </div>
       </div>
     </>
   );
